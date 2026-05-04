@@ -1,775 +1,832 @@
-import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
-from PIL import Image, ImageTk, ImageDraw
-import threading
+#!/usr/bin/env python3
+"""
+WATERMARK STUDIO - Professional Watermarking Application
+Tier 1-4 Complete Implementation
+Supports both PyQt6 and Tkinter backends
+"""
+
+import sys
 import os
+import json
 import glob
 import time
+import math
 import cv2
 import numpy as np
-import sys
+from PIL import Image, ImageDraw, ImageFont
+
+# Try PyQt6 first, fall back to Tkinter
+try:
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+        QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider, QListWidget,
+        QFileDialog, QGraphicsDropShadowEffect, QCheckBox, QProgressBar, QGraphicsItem,
+        QComboBox, QLineEdit, QColorDialog, QScrollArea, QListWidgetItem, QMenu,
+        QInputDialog, QMessageBox, QSizePolicy, QFrame, QDialog, QSpinBox, QDoubleSpinBox,
+        QTabWidget, QTextEdit
+    )
+    from PyQt6.QtCore import Qt, QPointF, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QSize, QUrl, QRect, QEvent, QMimeData, QPoint
+    from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QCursor, QIcon, QPen, QBrush, QAction, QKeySequence, QDropEvent, QDragEnterEvent
+    USE_PYQT6 = True
+except ImportError:
+    USE_PYQT6 = False
+    print("PyQt6 not available, falling back to Tkinter")
+
+if not USE_PYQT6:
+    import tkinter as tk
+    from tkinter import filedialog, ttk, messagebox
+    from PIL import ImageTk
+
+# DPI Awareness - Safe handling
+def enable_dpi_awareness():
+    """Enable DPI awareness safely on Windows"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            # Try Windows 10+ method first
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+            except:
+                try:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+                except:
+                    pass
+        except Exception as e:
+            print(f"DPI awareness warning (non-critical): {e}")
+
+enable_dpi_awareness()
+
+APP_PATH = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+PRESETS_FILE = os.path.join(os.path.expanduser("~"), ".watermark_studio_presets.json")
 
 try:
-    import ctypes
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    pass
+    FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+except Exception as e:
+    print(f"Warning: Face detection unavailable: {e}")
+    FACE_CASCADE = None
 
-# ─────────────────────────── THEMES ───────────────────────────
+# ── THEMES ─────────────────────────────────────────────────────────────────
 THEMES = {
     "light": {
-        "BG": "#f2f2f7",
-        "PANEL": "#ffffff",
-        "ACCENT": "#34C759", # Apple Green
-        "TEXT": "#000000",
-        "TEXT_DIM": "#8e8e93",
-        "SLIDER_BG": "#e5e5ea",
-        "BTN_HOVER": "#f2f2f7",
-        "BORDER": "#e5e5ea",
-        "CANVAS_BG": "#e5e5ea"
+        "bg": "#f2f2f7", "panel": "rgba(255,255,255,220)", "accent": "#34C759",
+        "accent2": "#30D158", "text": "#1c1c1e", "dim": "#8e8e93",
+        "border": "rgba(0,0,0,15)", "shadow": "QColor(0, 0, 0, 25)", "glow": "QColor(52, 199, 89)"
     },
     "dark": {
-        "BG": "#000000",
-        "PANEL": "#1c1c1e",
-        "ACCENT": "#30D158", # Apple Green (Dark Mode)
-        "TEXT": "#ffffff",
-        "TEXT_DIM": "#98989d",
-        "SLIDER_BG": "#3a3a3c",
-        "BTN_HOVER": "#2c2c2e",
-        "BORDER": "#38383a",
-        "CANVAS_BG": "#000000"
-    }
+        "bg": "#000000", "panel": "rgba(28,28,30,230)", "accent": "#30D158",
+        "accent2": "#34C759", "text": "#ffffff", "dim": "#98989d",
+        "border": "rgba(255,255,255,15)", "shadow": "QColor(0, 0, 0, 160)", "glow": "QColor(48, 209, 88)"
+    },
 }
 
-FONT_TITLE  = ("Segoe UI", 16)
-FONT_BTN    = ("Segoe UI", 10, "bold")
-FONT_LABEL  = ("Segoe UI", 9)
-FONT_SECTION = ("Segoe UI", 8, "bold")
+def qss(theme):
+    t = THEMES[theme]
+    return f"""
+    QMainWindow{{background:{t['bg']};}}
+    QGraphicsView{{border:none;background:transparent;}}
+    QWidget#Panel{{background-color:{t['panel']};border-radius:18px;border:1px solid {t['border']};}}
+    QWidget#Dock{{background-color:{t['panel']};border-radius:30px;border:1px solid {t['border']};}}
+    QPushButton{{background:transparent;color:{t['accent']};font-family:"Helvetica Neue","Segoe UI";font-size:13px;font-weight:600;border:none;border-radius:10px;padding:7px 16px;min-width:100px;}}
+    QPushButton:hover{{background:{t['border']};}}
+    QPushButton:pressed{{opacity:0.7;}}
+    QPushButton#primary{{background:{t['accent']};color:#fff;}}
+    QPushButton#primary:hover{{background:{t['accent2']};}}
+    QPushButton#icon{{min-width:36px;max-width:36px;padding:7px 4px;}}
+    QLabel{{color:{t['text']};font-family:"Helvetica Neue","Segoe UI";font-size:13px;background:transparent;}}
+    QLabel#dim{{color:{t['dim']};font-size:10px;font-weight:700;letter-spacing:1px;background:transparent;}}
+    QSlider::groove:horizontal{{background:rgba(128,128,128,60);height:4px;border-radius:2px;}}
+    QSlider::handle:horizontal{{background:{t['accent']};width:16px;height:16px;margin:-6px 0;border-radius:8px;}}
+    QSlider::sub-page:horizontal{{background:{t['accent']};border-radius:2px;}}
+    QListWidget{{background:transparent;border:none;color:{t['text']};font-size:12px;outline:none;}}
+    QListWidget::item{{padding:5px 8px;border-radius:8px;}}
+    QListWidget::item:selected{{background:{t['accent']};color:#fff;}}
+    QComboBox{{background:rgba(128,128,128,30);border:none;border-radius:8px;padding:5px 10px;color:{t['text']};font-size:12px;}}
+    QLineEdit{{background:rgba(128,128,128,30);border:none;border-radius:8px;padding:6px 10px;color:{t['text']};font-size:12px;}}
+    QCheckBox{{color:{t['text']};font-size:12px;spacing:6px;}}
+    QProgressBar{{background:rgba(128,128,128,40);border-radius:3px;height:6px;text-align:center;color:transparent;}}
+    QProgressBar::chunk{{background:{t['accent']};border-radius:3px;}}
+    QScrollArea{{border:none;background:transparent;}}
+    QScrollBar:vertical{{width:8px;}}
+    QScrollBar::handle:vertical{{background:rgba(128,128,128,100);border-radius:4px;}}
+    QTextEdit{{background:rgba(128,128,128,30);border:none;border-radius:8px;padding:6px 10px;color:{t['text']};font-size:12px;}}
+    QSpinBox,QDoubleSpinBox{{background:rgba(128,128,128,30);border:none;border-radius:8px;padding:5px 10px;color:{t['text']};font-size:12px;}}
+    QMenu{{background:{t['panel']};border:1px solid {t['border']};color:{t['text']};}}
+    QMenu::item:selected{{background:{t['accent']};color:#fff;}}
+    QDialog{{background:{t['bg']};color:{t['text']};}}
+    QTabWidget::pane{{border:1px solid {t['border']};}}
+    QTabBar::tab{{background:rgba(128,128,128,30);padding:5px 15px;margin:2px;border-radius:6px;}}
+    QTabBar::tab:selected{{background:{t['accent']};color:#fff;}}
+    """
 
-# ─────────────────────────── PILL BUTTON ─────────────────────────
-class PillButton(tk.Canvas):
-    def __init__(self, parent, text, command, is_primary=False, width=160, height=36, theme_dict=None, **kw):
-        super().__init__(parent, width=width, height=height, highlightthickness=0, cursor="hand2", **kw)
-        self.command = command
-        self.is_primary = is_primary
-        self.w, self.h = width, height
-        self.text_str = text
-        self.t = theme_dict
-        self.configure(bg=self.t["PANEL"])
-        self._draw()
-        self.bind("<Enter>",    self._on_enter)
-        self.bind("<Leave>",    self._on_leave)
-        self.bind("<Button-1>", self._on_click)
-        self.bind("<ButtonRelease-1>", self._on_release)
+def pil_to_qpixmap(img):
+    """Convert PIL Image to QPixmap"""
+    if not USE_PYQT6:
+        return None
+    img = img.convert("RGBA")
+    data = img.tobytes("raw", "RGBA")
+    qim = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(qim)
 
-    def update_theme(self, theme_dict):
-        self.t = theme_dict
-        self.configure(bg=self.t["PANEL"])
-        self._draw()
-
-    def _draw(self, hover=False, pressed=False):
-        self.delete("all")
-        if self.is_primary:
-            fill = self.t["ACCENT"]
-            text_color = "#ffffff"
-            if pressed: fill = "#2E8B57" # Darker green
-            elif hover: fill = "#3CB371" # Lighter green
-        else:
-            fill = self.t["SLIDER_BG"]
-            text_color = self.t["ACCENT"]
-            if hover: fill = self.t["BORDER"]
-            if pressed: fill = self.t["TEXT_DIM"]
-            
-        r = self.h // 2
-        x0, y0, x1, y1 = 2, 2, self.w-2, self.h-2
-        
-        self.create_arc(x0, y0, x0+2*r, y0+2*r, start=90, extent=180, fill=fill, outline="")
-        self.create_arc(x1-2*r, y0, x1, y0+2*r, start=-90, extent=180, fill=fill, outline="")
-        self.create_rectangle(x0+r, y0, x1-r, y1, fill=fill, outline="")
-        
-        self.create_text(self.w//2, self.h//2, text=self.text_str, fill=text_color, font=FONT_BTN)
-
-    def _on_enter(self, e):  self._draw(hover=True)
-    def _on_leave(self, e):  self._draw()
-    def _on_click(self, e):  self._draw(pressed=True)
-    def _on_release(self, e):
-        self._draw(hover=True)
-        if self.command:
-            self.after(50, self.command)
-
-# ─────────────────────────── PROGRESS DIALOG ─────────────────────────
-class ProgressDialog(tk.Toplevel):
-    def __init__(self, parent, title="Processing…", t=None):
-        super().__init__(parent)
-        self.t = t or THEMES["light"]
-        self.title(title)
-        self.configure(bg=self.t["PANEL"])
-        self.resizable(False, False)
-        self.overrideredirect(True)
-        w, h = 340, 110
-        px = parent.winfo_rootx() + parent.winfo_width()//2 - w//2
-        py = parent.winfo_rooty() + parent.winfo_height()//2 - h//2
-        self.geometry(f"{w}x{h}+{px}+{py}")
-        
-        self.border = tk.Frame(self, bg=self.t["BORDER"], bd=1)
-        self.border.pack(fill="both", expand=True)
-        self.inner = tk.Frame(self.border, bg=self.t["PANEL"])
-        self.inner.pack(fill="both", expand=True, padx=1, pady=1)
-        
-        tk.Label(self.inner, text=title, bg=self.t["PANEL"], fg=self.t["TEXT"], font=FONT_BTN).pack(pady=(16,4))
-        self.lbl = tk.Label(self.inner, text="Starting…", bg=self.t["PANEL"], fg=self.t["TEXT_DIM"], font=FONT_LABEL)
-        self.lbl.pack()
-        
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure("Apple.Horizontal.TProgressbar",
-                         troughcolor=self.t["SLIDER_BG"], background=self.t["ACCENT"],
-                         bordercolor=self.t["PANEL"], lightcolor=self.t["ACCENT"], darkcolor=self.t["ACCENT"])
-        self.bar = ttk.Progressbar(self.inner, style="Apple.Horizontal.TProgressbar",
-                                   orient="horizontal", length=300, mode="determinate")
-        self.bar.pack(pady=8)
-        self.grab_set()
-
-    def update_progress(self, value, text=""):
-        self.bar["value"] = value
-        if text: self.lbl.config(text=text)
-        self.update_idletasks()
-
-# ─────────────────────────── MAIN APP ────────────────────────────────
-class WatermarkApp(tk.Tk):
+# ── PRESET MANAGER ────────────────────────────────────────────────────────
+class PresetManager:
     def __init__(self):
-        super().__init__()
-        self.title("Watermark Studio")
-        self.geometry("1400x900")
-        self.minsize(1000, 600)
+        self.presets = {}
+        self.load()
 
-        # State
-        self.current_theme     = "light"
-        self.image_paths       = []     
-        self.current_img_idx   = -1
-        self.orig_image        = None   
-        self.orig_watermark    = None   
-        self.display_image     = None   
-        self.display_scale     = 1.0    
-        self.wm_scale          = 1.0    
-        
-        self.img_px            = 0      # Centered X padding
-        self.img_py            = 0      # Centered Y padding
-        self.wm_x              = 0      # Relative to img_px
-        self.wm_y              = 0      # Relative to img_py
-        
-        self._user_moved_wm    = False  
-        self._drag_ox          = 0
-        self._drag_oy          = 0
-        self._tk_img           = None
-        self._tk_wm            = None
-        self._canvas_img_id    = None
-        self._canvas_wm_id     = None
-        self._fast_mode        = False
-        
-        # Theme tracking
-        self.anim_buttons = []
-        self.theme_labels = []
-        self.theme_dim_labels = []
-        self.theme_frames = []
-        self.theme_bg_frames = []
+    def load(self):
+        if os.path.exists(PRESETS_FILE):
+            try:
+                self.presets = json.load(open(PRESETS_FILE))
+            except:
+                self.presets = {}
 
-        self._build_ui()
-        self._apply_theme()
+    def save_preset(self, name, data):
+        self.presets[name] = data
+        json.dump(self.presets, open(PRESETS_FILE, "w"), indent=2)
 
-    def _build_ui(self):
-        t = THEMES[self.current_theme]
-        
-        # ── Header ──
-        self.header = tk.Frame(self, height=60)
-        self.header.pack(fill="x")
-        self.header.pack_propagate(False)
-        self.theme_frames.append(self.header)
-        
-        self.header_lbl = tk.Label(self.header, text="Watermark Studio", font=FONT_TITLE)
-        self.header_lbl.pack(side="left", padx=20, pady=10)
-        
-        self.theme_btn = PillButton(self.header, "Dark Mode", self._toggle_theme, is_primary=False, width=100, height=28, theme_dict=t)
-        self.theme_btn.pack(side="right", padx=20, pady=16)
-        self.anim_buttons.append(self.theme_btn)
+    def delete_preset(self, name):
+        self.presets.pop(name, None)
+        json.dump(self.presets, open(PRESETS_FILE, "w"), indent=2)
 
-        # ── Left sidebar ──
-        self.sidebar = tk.Frame(self, width=300)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
-        self.theme_frames.append(self.sidebar)
-        
-        self.border_line = tk.Frame(self.sidebar, width=1)
-        self.border_line.pack(side="right", fill="y")
+    def names(self):
+        return list(self.presets.keys())
 
-        def section(txt, pad=(16, 4)):
-            lbl = tk.Label(self.sidebar, text=txt.upper(), font=FONT_SECTION)
-            lbl.pack(anchor="w", padx=20, pady=pad)
-            self.theme_dim_labels.append(lbl)
+    def get(self, name):
+        return self.presets.get(name, {})
 
-        # LOAD SECTION
-        section("Media")
-        load_frame = tk.Frame(self.sidebar)
-        load_frame.pack(fill="x", padx=20)
-        self.theme_frames.append(load_frame)
-        
-        b1 = PillButton(load_frame, "Load Folder", self._load_folder, is_primary=False, width=125, height=32, theme_dict=t)
-        b1.pack(side="left")
-        b2 = PillButton(load_frame, "Load WM", self._load_watermark, is_primary=False, width=125, height=32, theme_dict=t)
-        b2.pack(side="right")
-        self.anim_buttons.extend([b1, b2])
+# ── UNDO STACK ────────────────────────────────────────────────────────────
+class UndoStack:
+    def __init__(self, limit=50):
+        self._stack, self._idx, self._limit = [], -1, limit
 
-        # LISTBOX
-        self.list_frame = tk.Frame(self.sidebar)
-        self.list_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        self.theme_bg_frames.append(self.list_frame)
-        
-        self.listbox = tk.Listbox(self.list_frame, highlightthickness=0, borderwidth=0, font=FONT_LABEL)
-        sb = tk.Scrollbar(self.list_frame, orient="vertical", command=self.listbox.yview)
-        self.listbox.config(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.listbox.pack(side="left", fill="both", expand=True)
-        self.listbox.bind("<<ListboxSelect>>", self._on_listbox_select)
+    def push(self, state):
+        self._stack = self._stack[:self._idx + 1]
+        self._stack.append(state)
+        if len(self._stack) > self._limit:
+            self._stack.pop(0)
+        self._idx = len(self._stack) - 1
 
-        # IMAGE ZOOM
-        section("Image Zoom")
-        self.img_zoom_var = tk.DoubleVar(value=100)
-        zf = tk.Frame(self.sidebar)
-        zf.pack(fill="x", padx=20)
-        self.theme_frames.append(zf)
-        
-        l1 = tk.Label(zf, text="Zoom:", font=FONT_LABEL)
-        l1.pack(side="left")
-        self.img_zoom_pct_lbl = tk.Label(zf, text="100%", font=FONT_LABEL)
-        self.img_zoom_pct_lbl.pack(side="right")
-        self.theme_dim_labels.append(l1)
-        self.theme_labels.append(self.img_zoom_pct_lbl)
-        
-        self.img_zoom_slider = ttk.Scale(self.sidebar, from_=10, to=400, variable=self.img_zoom_var,
-                                     orient="horizontal", style="Apple.Horizontal.TScale",
-                                     command=self._on_img_zoom_change, length=260)
-        self.img_zoom_slider.pack(padx=20, pady=4)
-        
-        qf_zoom = tk.Frame(self.sidebar)
-        qf_zoom.pack(padx=20, pady=2, fill="x")
-        self.theme_frames.append(qf_zoom)
-        b_fit = PillButton(qf_zoom, "Fit to Bounds", self._fit_to_canvas_btn, is_primary=False, width=260, height=28, theme_dict=t)
-        b_fit.pack()
-        self.anim_buttons.append(b_fit)
+    def undo(self):
+        if self._idx > 0:
+            self._idx -= 1
+            return self._stack[self._idx]
+        return None
 
-        # WATERMARK SIZE SLIDER
-        section("Watermark Scale")
-        self.size_var = tk.DoubleVar(value=100)
-        wf = tk.Frame(self.sidebar)
-        wf.pack(fill="x", padx=20)
-        self.theme_frames.append(wf)
-        
-        l2 = tk.Label(wf, text="Scale:", font=FONT_LABEL)
-        l2.pack(side="left")
-        self.size_pct_lbl = tk.Label(wf, text="100%", font=FONT_LABEL)
-        self.size_pct_lbl.pack(side="right")
-        self.theme_dim_labels.append(l2)
-        self.theme_labels.append(self.size_pct_lbl)
-        
-        self.size_slider = ttk.Scale(self.sidebar, from_=10, to=300, variable=self.size_var,
-                                     orient="horizontal", style="Apple.Horizontal.TScale",
-                                     command=self._on_size_change, length=260)
-        self.size_slider.pack(padx=20, pady=4)
+    def redo(self):
+        if self._idx < len(self._stack) - 1:
+            self._idx += 1
+            return self._stack[self._idx]
+        return None
 
-        # SAVE OPTIONS
-        section("Settings")
-        self.save_mode = tk.StringVar(value="new_folder")
-        ttk.Radiobutton(self.sidebar, text="Save to 'output' folder", variable=self.save_mode, value="new_folder", style="TRadiobutton").pack(anchor="w", padx=20)
-        ttk.Radiobutton(self.sidebar, text="Overwrite original files", variable=self.save_mode, value="overwrite", style="TRadiobutton").pack(anchor="w", padx=20, pady=(4,0))
+    def can_undo(self):
+        return self._idx > 0
 
-        self.smart_placement = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.sidebar, text="Smart Placement (Batch)", variable=self.smart_placement, style="TCheckbutton").pack(anchor="w", padx=20, pady=(8,0))
+    def can_redo(self):
+        return self._idx < len(self._stack) - 1
 
-        # EXPORT
-        section("Export", pad=(24, 8))
-        b3 = PillButton(self.sidebar, "Save Current", self._save_current, is_primary=True, width=260, height=38, theme_dict=t)
-        b3.pack(padx=20, pady=4)
-        b4 = PillButton(self.sidebar, "Batch Process Folder", self._save_batch, is_primary=True, width=260, height=38, theme_dict=t)
-        b4.pack(padx=20, pady=4)
-        self.anim_buttons.extend([b3, b4])
+    def clear(self):
+        self._stack, self._idx = [], -1
 
-        # Status bar
-        self.status_lbl = tk.Label(self.sidebar, text="Ready", font=FONT_LABEL, wraplength=260, justify="left")
-        self.status_lbl.pack(side="bottom", padx=20, pady=20, anchor="w")
-        self.theme_dim_labels.append(self.status_lbl)
+# ── BLEND MODES ───────────────────────────────────────────────────────────
+def blend_images(base_arr, wm_arr, mode="Normal"):
+    """Apply blend mode to watermark"""
+    b = base_arr.astype(np.float32) / 255.0
+    w = wm_arr.astype(np.float32) / 255.0
+    alpha = w[:, :, 3:4]
+    wb, wrgb = b[:, :, :3], w[:, :, :3]
+    
+    if mode == "Multiply":
+        comp = wb * wrgb
+    elif mode == "Screen":
+        comp = 1 - (1 - wb) * (1 - wrgb)
+    elif mode == "Overlay":
+        comp = np.where(wb < 0.5, 2 * wb * wrgb, 1 - 2 * (1 - wb) * (1 - wrgb))
+    elif mode == "Soft Light":
+        comp = (1 - 2 * wrgb) * wb ** 2 + 2 * wrgb * wb
+    else:
+        comp = wrgb
+    
+    result = wb * (1 - alpha) + comp * alpha
+    out = base_arr.copy()
+    out[:, :, :3] = np.clip(result * 255, 0, 255).astype(np.uint8)
+    return out
 
-        # ── Canvas area ──
-        self.canvas_frame = tk.Frame(self)
-        self.canvas_frame.pack(side="left", fill="both", expand=True)
-        self.theme_frames.append(self.canvas_frame)
+# ── BATCH WORKER ──────────────────────────────────────────────────────────
+if USE_PYQT6:
+    class BatchWorker(QThread):
+        progress = pyqtSignal(int, str)
+        finished = pyqtSignal(int, int)
 
-        self.canvas = tk.Canvas(self.canvas_frame, highlightthickness=0, cursor="crosshair")
-        self.canvas.pack(fill="both", expand=True)
+        def __init__(self, paths, wm_pil, metrics, opts, overrides):
+            super().__init__()
+            self.paths = paths
+            self.wm_pil = wm_pil
+            self.metrics = metrics
+            self.opts = opts
+            self.overrides = overrides
+            self._stop = False
 
-        self.canvas.tag_bind("watermark", "<ButtonPress-1>",   self._wm_press)
-        self.canvas.tag_bind("watermark", "<B1-Motion>",       self._wm_drag)
-        self.canvas.tag_bind("watermark", "<ButtonRelease-1>", self._wm_release)
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind("<Configure>", self._on_canvas_resize)
-        self.bind("<Up>",    lambda e: self._arrow_move(0, -10))
-        self.bind("<Down>",  lambda e: self._arrow_move(0, 10))
-        self.bind("<Left>",  lambda e: self._arrow_move(-10, 0))
-        self.bind("<Right>", lambda e: self._arrow_move(10, 0))
-        self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
+        def stop(self):
+            self._stop = True
 
-    def _toggle_theme(self):
-        self.current_theme = "dark" if self.current_theme == "light" else "light"
-        self.theme_btn.text_str = "Light Mode" if self.current_theme == "dark" else "Dark Mode"
-        self._apply_theme()
+        def _face_regions(self, gray):
+            """Detect face regions"""
+            if not FACE_CASCADE:
+                return []
+            faces = FACE_CASCADE.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+            return faces if len(faces) else []
 
-    def _apply_theme(self):
-        t = THEMES[self.current_theme]
-        self.configure(bg=t["BG"])
-        
-        for f in self.theme_frames:
-            f.configure(bg=t["PANEL"])
-        for f in self.theme_bg_frames:
-            f.configure(bg=t["BG"])
+        def _find_smart_pos(self, base_img, wm_w, wm_h, use_face_avoid):
+            """Find optimal watermark position avoiding faces and details"""
+            cv_img = np.array(base_img.convert('RGB'))
+            gray = cv2.cvtColor(cv_img, cv2.COLOR_RGB2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
             
-        self.header_lbl.configure(bg=t["PANEL"], fg=t["TEXT"])
-        self.border_line.configure(bg=t["BORDER"])
-        
-        for btn in self.anim_buttons:
-            btn.update_theme(t)
+            if use_face_avoid:
+                for (fx, fy, fw, fh) in self._face_regions(gray):
+                    edges[fy:fy + fh, fx:fx + fw] = 255
             
-        self.listbox.configure(bg=t["BG"], fg=t["TEXT"], selectbackground=t["ACCENT"], selectforeground="#ffffff")
-        self.canvas.configure(bg=t["CANVAS_BG"])
-        
-        for lbl in self.theme_labels:
-            lbl.configure(bg=t["PANEL"], fg=t["TEXT"])
-        for lbl in self.theme_dim_labels:
-            lbl.configure(bg=t["PANEL"], fg=t["TEXT_DIM"])
+            integral = cv2.integral(edges)
+            ih, iw = gray.shape
             
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Apple.Horizontal.TScale", troughcolor=t["SLIDER_BG"], background=t["PANEL"], sliderthickness=16)
-        style.configure("TRadiobutton", background=t["PANEL"], foreground=t["TEXT"])
-        style.map("TRadiobutton", background=[('active', t["PANEL"])])
-        style.configure("TCheckbutton", background=t["PANEL"], foreground=t["TEXT"])
-        style.map("TCheckbutton", background=[('active', t["PANEL"])])
-        
-        self._refresh_canvas()
-
-    # ── iOS Custom Overlay Scrollbars ─────────────────────────────────
-    def _draw_overlay_scrollbars(self):
-        self.canvas.delete("overlay_scrollbar")
-        yv = self.canvas.yview()
-        xv = self.canvas.xview()
-        cw = self.canvas.winfo_width()
-        ch = self.canvas.winfo_height()
-        
-        sb_color = "#b0b0b5" if self.current_theme == "light" else "#5c5c60"
-        
-        if yv[0] > 0 or yv[1] < 1.0:
-            sb_h = ch * (yv[1] - yv[0])
-            sb_y = ch * yv[0]
-            self._draw_pill(cw - 12, sb_y + 4, cw - 4, sb_y + sb_h - 4, sb_color, "overlay_scrollbar")
-                                         
-        if xv[0] > 0 or xv[1] < 1.0:
-            sb_w = cw * (xv[1] - xv[0])
-            sb_x = cw * xv[0]
-            self._draw_pill(sb_x + 4, ch - 12, sb_x + sb_w - 4, ch - 4, sb_color, "overlay_scrollbar")
-
-    def _draw_pill(self, x0, y0, x1, y1, color, tags):
-        r = min(x1-x0, y1-y0) // 2
-        if r <= 0: return
-        self.canvas.create_arc(x0, y0, x0+2*r, y0+2*r, start=90, extent=180, fill=color, outline="", tags=tags)
-        self.canvas.create_arc(x1-2*r, y1-2*r, x1, y1, start=-90, extent=180, fill=color, outline="", tags=tags)
-        self.canvas.create_rectangle(x0+r, y0, x1-r, y1, fill=color, outline="", tags=tags)
-        self.canvas.create_rectangle(x0, y0+r, x1, y1-r, fill=color, outline="", tags=tags)
-
-    def _on_canvas_resize(self, event=None):
-        cw = self.canvas.winfo_width()
-        ch = self.canvas.winfo_height()
-        if hasattr(self, '_last_cw') and self._last_cw == cw and getattr(self, '_last_ch', 0) == ch:
-            return
-        self._last_cw = cw
-        self._last_ch = ch
-        
-        if self.orig_image:
-            self._refresh_canvas()
-        self._draw_overlay_scrollbars()
-
-    # ── Input Handlers ────────────────────────────────────────────────
-    def _clamp_watermark(self):
-        if not self.display_image or not self.orig_watermark: return
-        img_w, img_h = self.display_image.size
-        wm_disp = self._get_display_watermark()
-        if not wm_disp: return
-        wm_w, wm_h = wm_disp.size
-        
-        margin_x = int(wm_w * 0.8)
-        margin_y = int(wm_h * 0.8)
-        self.wm_x = max(-margin_x, min(self.wm_x, img_w + margin_x - wm_w))
-        self.wm_y = max(-margin_y, min(self.wm_y, img_h + margin_y - wm_h))
-
-    def _update_glow(self):
-        self.canvas.delete("glow")
-        if not self.display_image or not self.orig_watermark: return
-        img_w, img_h = self.display_image.size
-        wm_disp = self._get_display_watermark()
-        if not wm_disp: return
-        wm_w, wm_h = wm_disp.size
-        
-        t = THEMES[self.current_theme]
-        glow_color = t["ACCENT"]
-        w = 4
-        T = 5
-        
-        if self.wm_x <= T:
-            self.canvas.create_line(self.img_px, self.img_py, self.img_px, self.img_py+img_h, fill=glow_color, width=w, tags="glow")
-        if self.wm_x + wm_w >= img_w - T:
-            self.canvas.create_line(self.img_px+img_w, self.img_py, self.img_px+img_w, self.img_py+img_h, fill=glow_color, width=w, tags="glow")
-        if self.wm_y <= T:
-            self.canvas.create_line(self.img_px, self.img_py, self.img_px+img_w, self.img_py, fill=glow_color, width=w, tags="glow")
-        if self.wm_y + wm_h >= img_h - T:
-            self.canvas.create_line(self.img_px, self.img_py+img_h, self.img_px+img_w, self.img_py+img_h, fill=glow_color, width=w, tags="glow")
-
-    def _arrow_move(self, dx, dy):
-        if self.focus_get() == self.listbox: return
-        if not self.orig_watermark or not self._canvas_wm_id: return
-        self.wm_x += dx
-        self.wm_y += dy
-        self._clamp_watermark()
-        self.canvas.coords(self._canvas_wm_id, self.img_px + self.wm_x, self.img_py + self.wm_y)
-        self._update_glow()
-        self._user_moved_wm = True
-
-    def _on_mousewheel(self, e):
-        if e.state & 0x0004:
-            delta = 10 if e.delta > 0 else -10
-            new_val = max(10, min(300, self.size_var.get() + delta))
-            self.size_var.set(new_val)
-            self._on_size_change(new_val)
-        else:
-            self.canvas.yview_scroll(int(-1*(e.delta/120)), "units")
-            self._draw_overlay_scrollbars()
-
-    def _draw_placeholder(self):
-        self.canvas.delete("all")
-        t = THEMES[self.current_theme]
-        self.canvas.create_text(500, 300, text="Load a folder to get started",
-            fill=t["TEXT_DIM"], font=("Segoe UI", 16), tags="placeholder")
-
-    # ── Loading ───────────────────────────────────────────────────────
-    def _load_folder(self):
-        folder = filedialog.askdirectory(title="Select Folder")
-        if not folder: return
-        
-        dlg = ProgressDialog(self, "Scanning Folder…", t=THEMES[self.current_theme])
-        def work():
-            dlg.update_progress(50, "Finding images…")
-            exts = ('*.png', '*.jpg', '*.jpeg', '*.webp')
-            paths = []
-            for ext in exts:
-                paths.extend(glob.glob(os.path.join(folder, ext)))
-                paths.extend(glob.glob(os.path.join(folder, ext.upper())))
-            paths = sorted(list(set(paths)))
-            dlg.update_progress(100, f"Found {len(paths)} images")
-            time.sleep(0.3)
-            self.after(0, dlg.destroy)
-            self.after(0, lambda: self._populate_listbox(paths))
-        threading.Thread(target=work, daemon=True).start()
-
-    def _populate_listbox(self, paths):
-        self.image_paths = paths
-        self.listbox.delete(0, tk.END)
-        for p in paths:
-            self.listbox.insert(tk.END, os.path.basename(p))
-        if paths:
-            self.listbox.selection_set(0)
-            self._load_image_from_list(0)
-            self.status_lbl.config(text=f"Loaded {len(paths)} images.")
-
-    def _on_listbox_select(self, event):
-        sel = self.listbox.curselection()
-        if not sel: return
-        self._load_image_from_list(sel[0])
-
-    def _load_image_from_list(self, idx):
-        if idx == self.current_img_idx: return
-        self.current_img_idx = idx
-        path = self.image_paths[idx]
-        
-        dlg = ProgressDialog(self, "Loading Image…", t=THEMES[self.current_theme])
-        def work():
-            dlg.update_progress(30, "Reading file…")
-            img = Image.open(path).convert("RGBA")
-            dlg.update_progress(70, "Preparing…")
-            self.orig_image = img
-            self._user_moved_wm = False 
-            dlg.update_progress(100, "Done!")
-            time.sleep(0.1)
-            self.after(0, dlg.destroy)
-            self.after(0, self._fit_to_canvas_btn)
-        threading.Thread(target=work, daemon=True).start()
-
-    def _load_watermark(self):
-        path = filedialog.askopenfilename(
-            title="Select Watermark",
-            filetypes=[("PNG", "*.png"), ("Images", "*.png *.jpg *.jpeg"), ("All", "*.*")])
-        if not path: return
-        self._load_watermark_file(path)
-
-    def _load_watermark_file(self, path):
-        dlg = ProgressDialog(self, "Loading Watermark…", t=THEMES[self.current_theme])
-        def work():
-            dlg.update_progress(50, "Reading watermark…")
-            self.orig_watermark = Image.open(path).convert("RGBA")
-            self.size_var.set(100)
-            self._user_moved_wm = False
-            dlg.update_progress(100, "Applying…")
-            time.sleep(0.2)
-            self.after(0, dlg.destroy)
-            if self.orig_image:
-                self.after(0, self._fit_image_to_canvas)
-                self.after(0, self._refresh_canvas)
-            self.after(0, lambda: self.status_lbl.config(text=f"Watermark: {os.path.basename(path)}"))
-        threading.Thread(target=work, daemon=True).start()
-
-    # ── Canvas helpers ────────────────────────────────────────────────
-    def _fit_image_to_canvas(self):
-        if not self.orig_image: return
-        iw, ih = self.orig_image.size
-        self.display_scale = self.img_zoom_var.get() / 100.0
-        nw = max(1, int(iw * self.display_scale))
-        nh = max(1, int(ih * self.display_scale))
-        
-        # 60fps Optimization: Use NEAREST when actively dragging the slider, BILINEAR when finished
-        resampling = Image.Resampling.NEAREST if getattr(self, '_fast_mode', False) else Image.Resampling.BILINEAR
-        self.display_image = self.orig_image.resize((nw, nh), resampling)
-        
-        if self.orig_watermark and not self._user_moved_wm:
-            wm_disp = self._get_display_watermark()
-            if wm_disp:
-                self.wm_x = (nw - wm_disp.size[0]) // 2
-                self.wm_y = nh - wm_disp.size[1]
-        self._clamp_watermark()
-
-    def _get_display_watermark(self):
-        if not self.orig_watermark: return None
-        ow, oh = self.orig_watermark.size
-        factor = self.display_scale * (self.size_var.get() / 100.0)
-        nw = max(4, int(ow * factor))
-        nh = max(4, int(oh * factor))
-        resampling = Image.Resampling.NEAREST if getattr(self, '_fast_mode', False) else Image.Resampling.BILINEAR
-        return self.orig_watermark.resize((nw, nh), resampling)
-
-    def _refresh_canvas(self):
-        self.canvas.delete("all")
-        if self.orig_image:
-            if not self.display_image: self._fit_image_to_canvas()
+            if wm_w >= iw or wm_h >= ih:
+                return (iw - wm_w) // 2, ih - wm_h
             
-            iw, ih = self.display_image.size
-            cw = self.canvas.winfo_width()
-            ch = self.canvas.winfo_height()
+            best_score, bx, by = float('inf'), 0, 0
+            sx, sy = max(1, iw // 50), max(1, ih // 50)
+            ypen = 255 * 5
             
-            # Dynamic Centering: Equal padding if zoomed out, zero padding if zoomed in past bounds
-            self.img_px = (cw - iw) // 2 if iw < cw else 0
-            self.img_py = (ch - ih) // 2 if ih < ch else 0
+            for y in range(0, ih - wm_h + 1, sy):
+                for x in range(0, iw - wm_w + 1, sx):
+                    s = integral[y + wm_h, x + wm_w] - integral[y, x + wm_w] - integral[y + wm_h, x] + integral[y, x]
+                    score = s + ((ih - wm_h) - y) * ypen
+                    if score < best_score:
+                        best_score, bx, by = score, x, y
             
-            # Scrollregion bounds the image correctly
-            self.canvas.configure(scrollregion=(0, 0, max(cw, iw), max(ch, ih)))
+            return int(bx), int(by)
+
+        def _smart_opacity(self, base_img, px, py, wm_w, wm_h, base_opacity):
+            """Adjust opacity based on underlying brightness"""
+            region = base_img.crop((max(0, px), max(0, py), min(base_img.width, px + wm_w), min(base_img.height, py + wm_h)))
+            if region.width < 1 or region.height < 1:
+                return base_opacity
             
-            self._tk_img = ImageTk.PhotoImage(self.display_image)
-            self._canvas_img_id = self.canvas.create_image(self.img_px, self.img_py, anchor="nw", image=self._tk_img, tags="bg_image")
+            gray_arr = np.array(region.convert('L'), dtype=np.float32)
+            avg_brightness = gray_arr.mean() / 255.0
+            adjusted = base_opacity * (0.6 + 0.4 * avg_brightness)
+            return max(0.15, min(1.0, adjusted))
+
+        def _apply_wm(self, base_img, wm, px, py, mode, smart_op, base_op):
+            """Apply watermark with blending"""
+            px, py = int(px), int(py)
+            paste_x, paste_y = max(0, px), max(0, py)
+            crop_x, crop_y = max(0, -px), max(0, -py)
+            crop_w = min(wm.width - crop_x, base_img.width - paste_x)
+            crop_h = min(wm.height - crop_y, base_img.height - paste_y)
             
-            # Subtle boundary line
-            t = THEMES[self.current_theme]
-            self.canvas.create_rectangle(self.img_px, self.img_py, self.img_px+iw, self.img_py+ih, outline=t["BORDER"], width=1, tags="boundary")
+            if crop_w <= 0 or crop_h <= 0:
+                return base_img
             
-        if self.orig_watermark:
-            wm_disp = self._get_display_watermark()
-            self._tk_wm = ImageTk.PhotoImage(wm_disp)
-            self._canvas_wm_id = self.canvas.create_image(
-                self.img_px + self.wm_x, self.img_py + self.wm_y, anchor="nw", image=self._tk_wm, tags="watermark")
-
-        self._update_glow()
-        self._draw_overlay_scrollbars()
-        if not self.orig_image: self._draw_placeholder()
-
-    # ── Drag ──────────────────────────────────────────────────────────
-    def _wm_press(self, e):
-        cx = self.canvas.canvasx(e.x)
-        cy = self.canvas.canvasy(e.y)
-        self._drag_ox = cx - (self.wm_x + self.img_px)
-        self._drag_oy = cy - (self.wm_y + self.img_py)
-        self._user_moved_wm = True
-        self.canvas.config(cursor="fleur")
-
-    def _wm_drag(self, e):
-        if e.y > self.canvas.winfo_height() - 40: self.canvas.yview_scroll(1, "units")
-        elif e.y < 40: self.canvas.yview_scroll(-1, "units")
-        if e.x > self.canvas.winfo_width() - 40: self.canvas.xview_scroll(1, "units")
-        elif e.x < 40: self.canvas.xview_scroll(-1, "units")
-
-        cx = self.canvas.canvasx(e.x)
-        cy = self.canvas.canvasy(e.y)
-        self.wm_x = cx - self._drag_ox - self.img_px
-        self.wm_y = cy - self._drag_oy - self.img_py
-        self._clamp_watermark()
-        self.canvas.coords(self._canvas_wm_id, self.img_px + self.wm_x, self.img_py + self.wm_y)
-        self._update_glow()
-        self._draw_overlay_scrollbars()
-
-    def _wm_release(self, e):
-        self.canvas.config(cursor="crosshair")
-
-    # ── Resize ────────────────────────────────────────────────────────
-    def _fit_to_canvas_btn(self):
-        if not self.orig_image: return
-        self.update_idletasks()
-        cw = self.canvas.winfo_width()
-        iw = self.orig_image.width
-        if iw <= 0: return
-        pct = max(10, min(400, int((cw / iw) * 100)))
-        self.img_zoom_var.set(pct)
-        self.img_zoom_pct_lbl.config(text=f"{pct}%")
-        self._apply_img_zoom_hq()
-
-    def _on_size_change(self, val):
-        pct = int(float(val))
-        self.size_pct_lbl.config(text=f"{pct}%")
-        self._fast_mode = True
-        self._clamp_watermark()
-        self._refresh_canvas()
-        if hasattr(self, '_wm_size_job'): self.after_cancel(self._wm_size_job)
-        self._wm_size_job = self.after(150, self._apply_wm_size_hq)
-
-    def _apply_wm_size_hq(self):
-        self._fast_mode = False
-        self._clamp_watermark()
-        self._refresh_canvas()
-
-    def _on_img_zoom_change(self, val):
-        pct = int(float(val))
-        self.img_zoom_pct_lbl.config(text=f"{pct}%")
-        self._fast_mode = True
-        self._fit_image_to_canvas()
-        self._refresh_canvas()
-        if hasattr(self, '_zoom_job'): self.after_cancel(self._zoom_job)
-        self._zoom_job = self.after(150, self._apply_img_zoom_hq)
-
-    def _apply_img_zoom_hq(self):
-        self._fast_mode = False
-        self._fit_image_to_canvas()
-        self._refresh_canvas()
-
-    # ── Saving Logic ──────────────────────────────────────────────────
-    def _get_relative_wm_metrics(self):
-        if not self.display_image or not self.orig_watermark: return None
-        dw, dh = self.display_image.size
-        wm_disp = self._get_display_watermark()
-        if not wm_disp: return None
-        wm_cw, wm_ch = wm_disp.size
-        center_x = self.wm_x + (wm_cw / 2)
-        center_y = self.wm_y + (wm_ch / 2)
-        rel_cx = center_x / dw
-        rel_cy = center_y / dh
-        actual_wm_width_in_orig = (wm_cw / self.display_scale)
-        rel_scale = actual_wm_width_in_orig / self.orig_image.size[0]
-        return rel_cx, rel_cy, rel_scale
-
-    def _find_smart_position(self, base_img, wm_w, wm_h):
-        cv_img = np.array(base_img.convert('RGB'))
-        gray = cv2.cvtColor(cv_img, cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
-        integral = cv2.integral(edges)
-        img_h, img_w = gray.shape
-        if wm_w >= img_w or wm_h >= img_h: return (img_w - wm_w) // 2, img_h - wm_h
-        min_score, best_x, best_y = float('inf'), 0, 0
-        stride_x, stride_y = max(1, img_w // 50), max(1, img_h // 50)
-        y_penalty_factor = 255 * 5  
-        for y in range(0, img_h - wm_h + 1, stride_y):
-            for x in range(0, img_w - wm_w + 1, stride_x):
-                sum_edges = (integral[y + wm_h, x + wm_w] - integral[y, x + wm_w] - integral[y + wm_h, x] + integral[y, x])
-                score = sum_edges + ((img_h - wm_h) - y) * y_penalty_factor
-                if score < min_score:
-                    min_score, best_x, best_y = score, x, y
-        return int(best_x), int(best_y)
-
-    def _process_single_image(self, img_path, metrics, use_smart=False):
-        try:
-            base_img = Image.open(img_path).convert("RGBA")
-            iw, ih = base_img.size
-            rel_cx, rel_cy, rel_scale = metrics
-            ow, oh = self.orig_watermark.size
-            target_w = int(iw * rel_scale)
-            scale = target_w / ow
-            target_h = int(oh * scale)
-            wm_final = self.orig_watermark.resize((max(1, target_w), max(1, target_h)), Image.Resampling.LANCZOS)
+            wm_crop = wm.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
+            op = self._smart_opacity(base_img, paste_x, paste_y, crop_w, crop_h, base_op) if smart_op else base_op
             
-            if use_smart: px, py = self._find_smart_position(base_img, target_w, target_h)
+            if op < 1.0:
+                r, g, b, a = wm_crop.split()
+                a = a.point(lambda v: int(v * op))
+                wm_crop = Image.merge('RGBA', (r, g, b, a))
+
+            if mode == "Normal":
+                out = base_img.copy()
+                out.paste(wm_crop, (paste_x, paste_y), wm_crop)
+                return out
             else:
-                px = int((iw * rel_cx) - (target_w / 2))
-                py = int((ih * rel_cy) - (target_h / 2))
+                base_arr = np.array(base_img)
+                wm_arr = np.zeros((base_img.height, base_img.width, 4), dtype=np.uint8)
+                wm_arr[paste_y:paste_y + crop_h, paste_x:paste_x + crop_w] = np.array(wm_crop)
+                blended = blend_images(base_arr, wm_arr, mode)
+                return Image.fromarray(blended)
+
+        def run(self):
+            """Process all images"""
+            total = len(self.paths)
+            success = 0
+            rel_cx, rel_cy, rel_scale, opacity, rotation = self.metrics
             
-            base_img.paste(wm_final, (px, py), wm_final)
+            tile = self.opts.get("tile", False)
+            use_smart = self.opts.get("smart", False)
+            use_face = self.opts.get("face_avoid", False)
+            smart_op = self.opts.get("smart_opacity", False)
+            blend_mode = self.opts.get("blend_mode", "Normal")
+            out_mode = self.opts.get("out_mode", "new_folder")
+            out_fmt = self.opts.get("out_fmt", "original")
             
-            if self.save_mode.get() == "overwrite": out_path = img_path
-            else:
-                out_dir = os.path.join(os.path.dirname(img_path), "output")
-                os.makedirs(out_dir, exist_ok=True)
-                out_path = os.path.join(out_dir, os.path.basename(img_path))
+            ow, oh = self.wm_pil.size
+            t0 = time.time()
+
+            for i, path in enumerate(self.paths):
+                if self._stop:
+                    break
                 
-            save_kw = {"quality": 100, "subsampling": 0} if out_path.lower().endswith((".jpg", ".jpeg")) else {}
-            base_img.convert("RGB").save(out_path, **save_kw)
-            return True
-        except Exception as e:
-            print(f"Failed to process {img_path}: {e}")
-            return False
+                if total > 0:
+                    elapsed = time.time() - t0
+                    rate = (i + 1) / max(elapsed, 0.001)
+                    eta = (total - i - 1) / rate if rate > 0 else 0
+                    eta_str = f"ETA {eta:.0f}s" if eta > 1 else "finishing..."
+                    self.progress.emit(int((i / total) * 100), f"{i + 1}/{total}  {eta_str}")
+                
+                try:
+                    base_img = Image.open(path).convert("RGBA")
+                    iw, ih = base_img.size
 
-    def _save_current(self):
-        if not self.orig_image or not self.orig_watermark or self.current_img_idx < 0:
-            messagebox.showwarning("Warning", "Please load an image and watermark first.")
-            return
-        metrics = self._get_relative_wm_metrics()
-        path = self.image_paths[self.current_img_idx]
-        dlg = ProgressDialog(self, "Saving Image…", t=THEMES[self.current_theme])
-        def work():
-            dlg.update_progress(50, "Compositing & Saving…")
-            success = self._process_single_image(path, metrics)
-            dlg.update_progress(100, "Done!")
-            time.sleep(0.3)
-            self.after(0, dlg.destroy)
-            msg = f"✔ Saved: {os.path.basename(path)}" if success else "❌ Save failed."
-            self.after(0, lambda: self.status_lbl.config(text=msg))
-        threading.Thread(target=work, daemon=True).start()
+                    m = self.overrides.get(path)
+                    rcx, rcy, rsc, rop, rrot = m if m else (rel_cx, rel_cy, rel_scale, opacity, rotation)
 
-    def _save_batch(self):
-        if not self.image_paths or not self.orig_watermark:
-            messagebox.showwarning("Warning", "Please load a folder and a watermark first.")
-            return
-        metrics = self._get_relative_wm_metrics()
-        total = len(self.image_paths)
-        use_smart = self.smart_placement.get()
-        dlg = ProgressDialog(self, f"Batch Processing {total} images…", t=THEMES[self.current_theme])
-        def work():
-            success_count = 0
-            for i, path in enumerate(self.image_paths):
-                pct = int((i / total) * 100)
-                dlg.update_progress(pct, f"Processing {i+1}/{total}...")
-                if self._process_single_image(path, metrics, use_smart=use_smart): success_count += 1
-            dlg.update_progress(100, "Finished Batch!")
-            time.sleep(0.5)
-            self.after(0, dlg.destroy)
-            self.after(0, lambda: self.status_lbl.config(text=f"✔ Batch complete. Processed {success_count}/{total} images."))
-        threading.Thread(target=work, daemon=True).start()
+                    target_w = max(1, int(iw * rsc))
+                    scale = target_w / ow
+                    target_h = max(1, int(oh * scale))
+                    wm = self.wm_pil.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                    
+                    if rrot != 0:
+                        wm = wm.rotate(-rrot, expand=True, resample=Image.Resampling.BICUBIC)
+
+                    if tile:
+                        tw, th = wm.size
+                        for ty in range(0, ih, th + 20):
+                            for tx in range(0, iw, tw + 20):
+                                base_img = self._apply_wm(base_img, wm, tx, ty, blend_mode, smart_op, rop)
+                    elif use_smart:
+                        px, py = self._find_smart_pos(base_img, wm.width, wm.height, use_face)
+                        base_img = self._apply_wm(base_img, wm, px, py, blend_mode, smart_op, rop)
+                    else:
+                        px = int(iw * rcx - wm.width / 2)
+                        py = int(ih * rcy - wm.height / 2)
+                        base_img = self._apply_wm(base_img, wm, px, py, blend_mode, smart_op, rop)
+
+                    if out_mode == "overwrite":
+                        out_path = path
+                    else:
+                        out_dir = os.path.join(os.path.dirname(path), "output")
+                        os.makedirs(out_dir, exist_ok=True)
+                        out_path = os.path.join(out_dir, os.path.basename(path))
+                    
+                    ext = out_fmt if out_fmt != "original" else os.path.splitext(path)[1].lower().lstrip(".")
+                    
+                    if ext in ("jpg", "jpeg"):
+                        base_img.convert("RGB").save(out_path.rsplit(".", 1)[0] + ".jpg", quality=100, subsampling=0)
+                    elif ext == "webp":
+                        base_img.save(out_path.rsplit(".", 1)[0] + ".webp", quality=100, method=6)
+                    else:
+                        base_img.save(out_path.rsplit(".", 1)[0] + ".png")
+                    
+                    success += 1
+                except Exception as e:
+                    print(f"Error {path}: {e}")
+            
+            self.progress.emit(100, "Done!")
+            self.finished.emit(success, total)
+
+# ── WELCOME WIDGET ────────────────────────────────────────────────────────
+if USE_PYQT6:
+    class WelcomeWidget(QWidget):
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            lay = QVBoxLayout(self)
+            lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            icon = QLabel("💧")
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon.setStyleSheet("font-size:64px;background:transparent;")
+            
+            title = QLabel("Watermark Studio")
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            title.setStyleSheet("font-size:28px;font-weight:700;background:transparent;")
+            
+            sub = QLabel("Drag a folder or image here to begin")
+            sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sub.setStyleSheet("font-size:14px;color:#8e8e93;background:transparent;")
+            
+            lay.addWidget(icon)
+            lay.addWidget(title)
+            lay.addSpacing(8)
+            lay.addWidget(sub)
+
+# ── SHORTCUTS DIALOG ──────────────────────────────────────────────────────
+if USE_PYQT6:
+    class ShortcutsDialog(QDialog):
+        def __init__(self, parent, theme):
+            super().__init__(parent)
+            t = THEMES[theme]
+            self.setWindowTitle("Keyboard Shortcuts")
+            self.setFixedSize(420, 500)
+            self.setStyleSheet(f"background:{t['bg']};color:{t['text']};font-family:'Helvetica Neue','Segoe UI';")
+            
+            lay = QVBoxLayout(self)
+            title = QLabel("Keyboard Shortcuts")
+            title.setStyleSheet("font-size:18px;font-weight:700;padding:10px;")
+            lay.addWidget(title)
+            
+            shortcuts = [
+                ("Arrow Keys", "Move watermark ±10px"),
+                ("Ctrl+Z", "Undo"),
+                ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
+                ("Ctrl+Scroll", "Scale watermark"),
+                ("Ctrl+O", "Load Folder"),
+                ("Ctrl+W", "Load Watermark"),
+                ("Ctrl+S", "Save Current"),
+                ("Ctrl+B", "Batch Export"),
+                ("Ctrl+F", "Fit to View"),
+                ("?", "Show this dialog"),
+                ("[", "Previous Image"),
+                ("]", "Next Image"),
+                ("Ctrl+I", "Toggle Image List"),
+            ]
+            
+            for key, desc in shortcuts:
+                row = QWidget()
+                row.setStyleSheet("background:transparent;")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(8, 4, 8, 4)
+                
+                lk = QLabel(key)
+                lk.setStyleSheet(f"background:{t['panel']};border-radius:6px;padding:3px 8px;font-weight:600;color:{t['accent']};")
+                lk.setFixedWidth(160)
+                
+                ld = QLabel(desc)
+                ld.setStyleSheet(f"color:{t['dim']};")
+                
+                rl.addWidget(lk)
+                rl.addWidget(ld)
+                lay.addWidget(row)
+            
+            lay.addStretch()
+
+# ── MAIN APPLICATION (PyQt6) ──────────────────────────────────────────────
+if USE_PYQT6:
+    class WatermarkStudio(QMainWindow):
+        def __init__(self):
+            super().__init__()
+            self.setWindowTitle("Watermark Studio")
+            self.setGeometry(100, 100, 1400, 900)
+            self.theme = "dark"
+            self.setStyleSheet(qss(self.theme))
+
+            # Core state
+            self.image_list = []
+            self.current_idx = 0
+            self.orig_image = None
+            self.watermark_pil = None
+            self.watermark_item = None
+            self.undo_stack = UndoStack()
+            self.preset_manager = PresetManager()
+            self.per_image_overrides = {}
+            self.batch_worker = None
+
+            # Watermark metrics
+            self.wm_cx = 0.5
+            self.wm_cy = 0.5
+            self.wm_scale = 0.2
+            self.wm_opacity = 0.5
+            self.wm_rotation = 0
+
+            # Batch options
+            self.batch_opts = {
+                "tile": False,
+                "smart": False,
+                "face_avoid": False,
+                "smart_opacity": False,
+                "blend_mode": "Normal",
+                "out_mode": "new_folder",
+                "out_fmt": "original"
+            }
+
+            self.build_ui()
+            self.apply_theme()
+
+        def build_ui(self):
+            central = QWidget()
+            self.setCentralWidget(central)
+            main_lay = QHBoxLayout(central)
+            main_lay.setContentsMargins(10, 10, 10, 10)
+            main_lay.setSpacing(10)
+
+            # Left panel
+            left_panel = QWidget()
+            left_panel.setObjectName("Panel")
+            left_panel.setFixedWidth(280)
+            left_lay = QVBoxLayout(left_panel)
+            
+            file_lay = QHBoxLayout()
+            load_folder_btn = QPushButton("📁 Folder")
+            load_folder_btn.clicked.connect(self.load_folder)
+            load_wm_btn = QPushButton("🎨 Watermark")
+            load_wm_btn.clicked.connect(self.load_watermark)
+            file_lay.addWidget(load_folder_btn)
+            file_lay.addWidget(load_wm_btn)
+            left_lay.addLayout(file_lay)
+
+            # Scrollable settings
+            scroll = QScrollArea()
+            scroll.setStyleSheet("background:transparent;border:none;")
+            scroll.setWidgetResizable(True)
+            scroll_widget = QWidget()
+            scroll_layout = QVBoxLayout(scroll_widget)
+            scroll_layout.setSpacing(8)
+
+            scroll_layout.addWidget(QLabel("Position:"))
+            self.cx_slider = QSlider(Qt.Orientation.Horizontal)
+            self.cx_slider.setRange(0, 100)
+            self.cx_slider.setValue(50)
+            self.cx_slider.sliderMoved.connect(self.on_metrics_changed)
+            scroll_layout.addWidget(self.cx_slider)
+
+            self.cy_slider = QSlider(Qt.Orientation.Horizontal)
+            self.cy_slider.setRange(0, 100)
+            self.cy_slider.setValue(50)
+            self.cy_slider.sliderMoved.connect(self.on_metrics_changed)
+            scroll_layout.addWidget(self.cy_slider)
+
+            scroll_layout.addWidget(QLabel("Scale:"))
+            self.scale_slider = QSlider(Qt.Orientation.Horizontal)
+            self.scale_slider.setRange(5, 100)
+            self.scale_slider.setValue(20)
+            self.scale_slider.sliderMoved.connect(self.on_metrics_changed)
+            scroll_layout.addWidget(self.scale_slider)
+
+            scroll_layout.addWidget(QLabel("Opacity:"))
+            self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+            self.opacity_slider.setRange(0, 100)
+            self.opacity_slider.setValue(50)
+            self.opacity_slider.sliderMoved.connect(self.on_metrics_changed)
+            scroll_layout.addWidget(self.opacity_slider)
+
+            scroll_layout.addWidget(QLabel("Rotation:"))
+            self.rotation_slider = QSlider(Qt.Orientation.Horizontal)
+            self.rotation_slider.setRange(-180, 180)
+            self.rotation_slider.setValue(0)
+            self.rotation_slider.sliderMoved.connect(self.on_metrics_changed)
+            scroll_layout.addWidget(self.rotation_slider)
+
+            scroll_layout.addWidget(QLabel("Blend Mode:"))
+            self.blend_combo = QComboBox()
+            self.blend_combo.addItems(["Normal", "Multiply", "Screen", "Overlay", "Soft Light"])
+            self.blend_combo.currentTextChanged.connect(self.on_blend_changed)
+            scroll_layout.addWidget(self.blend_combo)
+
+            scroll_layout.addWidget(QLabel("Batch Options:"))
+            self.tile_cb = QCheckBox("Tile Pattern")
+            self.tile_cb.toggled.connect(lambda x: self.batch_opts.update({"tile": x}))
+            scroll_layout.addWidget(self.tile_cb)
+
+            self.smart_cb = QCheckBox("Smart Position")
+            self.smart_cb.toggled.connect(lambda x: self.batch_opts.update({"smart": x}))
+            scroll_layout.addWidget(self.smart_cb)
+
+            self.face_avoid_cb = QCheckBox("Avoid Faces")
+            self.face_avoid_cb.toggled.connect(lambda x: self.batch_opts.update({"face_avoid": x}))
+            scroll_layout.addWidget(self.face_avoid_cb)
+
+            self.smart_opacity_cb = QCheckBox("Smart Opacity")
+            self.smart_opacity_cb.toggled.connect(lambda x: self.batch_opts.update({"smart_opacity": x}))
+            scroll_layout.addWidget(self.smart_opacity_cb)
+
+            scroll_layout.addWidget(QLabel("Output Mode:"))
+            self.output_mode_combo = QComboBox()
+            self.output_mode_combo.addItems(["new_folder", "overwrite"])
+            self.output_mode_combo.currentTextChanged.connect(lambda x: self.batch_opts.update({"out_mode": x}))
+            scroll_layout.addWidget(self.output_mode_combo)
+
+            scroll_layout.addWidget(QLabel("Output Format:"))
+            self.output_fmt_combo = QComboBox()
+            self.output_fmt_combo.addItems(["original", "png", "jpg", "webp"])
+            self.output_fmt_combo.currentTextChanged.connect(lambda x: self.batch_opts.update({"out_fmt": x}))
+            scroll_layout.addWidget(self.output_fmt_combo)
+
+            scroll_layout.addStretch()
+            scroll.setWidget(scroll_widget)
+            left_lay.addWidget(scroll, 1)
+
+            button_lay = QVBoxLayout()
+            batch_btn = QPushButton("⚙ Batch")
+            batch_btn.setProperty("id", "primary")
+            batch_btn.clicked.connect(self.batch_export)
+            button_lay.addWidget(batch_btn)
+            left_lay.addLayout(button_lay)
+
+            main_lay.addWidget(left_panel, 0)
+
+            # Center: Canvas
+            self.scene = QGraphicsScene()
+            self.view = QGraphicsView(self.scene)
+            self.view.setStyleSheet("border:none;background:transparent;")
+            main_lay.addWidget(self.view, 1)
+
+            # Right panel: Image list
+            right_panel = QWidget()
+            right_panel.setObjectName("Panel")
+            right_panel.setFixedWidth(200)
+            right_lay = QVBoxLayout(right_panel)
+
+            self.image_list_widget = QListWidget()
+            self.image_list_widget.itemClicked.connect(self.on_image_selected)
+            right_lay.addWidget(self.image_list_widget)
+
+            nav_lay = QHBoxLayout()
+            prev_btn = QPushButton("← Prev")
+            prev_btn.clicked.connect(self.prev_image)
+            next_btn = QPushButton("Next →")
+            next_btn.clicked.connect(self.next_image)
+            nav_lay.addWidget(prev_btn)
+            nav_lay.addWidget(next_btn)
+            right_lay.addLayout(nav_lay)
+
+            main_lay.addWidget(right_panel, 0)
+
+            self.setup_menu_bar()
+            self.setup_shortcuts()
+            self.setAcceptDrops(True)
+
+        def setup_menu_bar(self):
+            menubar = self.menuBar()
+            file_menu = menubar.addMenu("File")
+            
+            open_action = QAction("Open Folder", self)
+            open_action.setShortcut(QKeySequence.StandardKey.Open)
+            open_action.triggered.connect(self.load_folder)
+            file_menu.addAction(open_action)
+
+            wm_action = QAction("Load Watermark", self)
+            wm_action.setShortcut("Ctrl+W")
+            wm_action.triggered.connect(self.load_watermark)
+            file_menu.addAction(wm_action)
+
+            batch_action = QAction("Batch Export", self)
+            batch_action.setShortcut("Ctrl+B")
+            batch_action.triggered.connect(self.batch_export)
+            file_menu.addAction(batch_action)
+
+        def setup_shortcuts(self):
+            self.addAction(self._make_action("Ctrl+O", self.load_folder))
+            self.addAction(self._make_action("Ctrl+W", self.load_watermark))
+            self.addAction(self._make_action("Ctrl+B", self.batch_export))
+            self.addAction(self._make_action("[", self.prev_image))
+            self.addAction(self._make_action("]", self.next_image))
+            self.addAction(self._make_action("?", self.show_shortcuts))
+
+        def _make_action(self, shortcut, func):
+            action = QAction(self)
+            action.setShortcut(shortcut)
+            action.triggered.connect(func)
+            return action
+
+        def load_folder(self):
+            folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
+            if folder:
+                self.load_folder_from_path(folder)
+
+        def load_folder_from_path(self, folder):
+            exts = ('*.png', '*.jpg', '*.jpeg', '*.gif', '*.bmp', '*.webp')
+            images = []
+            for ext in exts:
+                images.extend(glob.glob(os.path.join(folder, ext)))
+                images.extend(glob.glob(os.path.join(folder, ext.upper())))
+            images = sorted(list(set(images)))
+            if not images:
+                QMessageBox.warning(self, "No Images", "No images found in folder")
+                return
+            self.image_list = images
+            self.current_idx = 0
+            self.update_image_list_widget()
+            self.display_image(0)
+
+        def load_watermark(self):
+            path, _ = QFileDialog.getOpenFileName(self, "Select Watermark", filter="Images (*.png *.jpg)")
+            if path:
+                self.load_watermark_from_path(path)
+
+        def load_watermark_from_path(self, path):
+            try:
+                self.watermark_pil = Image.open(path).convert("RGBA")
+                self.render_preview()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load: {e}")
+
+        def on_metrics_changed(self):
+            self.wm_cx = self.cx_slider.value() / 100.0
+            self.wm_cy = self.cy_slider.value() / 100.0
+            self.wm_scale = self.scale_slider.value() / 100.0
+            self.wm_opacity = self.opacity_slider.value() / 100.0
+            self.wm_rotation = self.rotation_slider.value()
+            self.render_preview()
+
+        def on_blend_changed(self):
+            mode = self.blend_combo.currentText()
+            self.batch_opts["blend_mode"] = mode
+            self.render_preview()
+
+        def render_preview(self):
+            if not self.orig_image or not self.watermark_pil:
+                return
+
+            try:
+                iw, ih = self.orig_image.size
+                target_w = max(1, int(iw * self.wm_scale))
+                scale = target_w / self.watermark_pil.width
+                target_h = max(1, int(self.watermark_pil.height * scale))
+                wm = self.watermark_pil.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+                if self.wm_rotation != 0:
+                    wm = wm.rotate(-self.wm_rotation, expand=True, resample=Image.Resampling.BICUBIC)
+
+                if self.wm_opacity < 1.0:
+                    r, g, b, a = wm.split()
+                    a = a.point(lambda v: int(v * self.wm_opacity))
+                    wm = Image.merge('RGBA', (r, g, b, a))
+
+                px = int(iw * self.wm_cx - wm.width / 2)
+                py = int(ih * self.wm_cy - wm.height / 2)
+
+                preview_img = self.orig_image.copy()
+                preview_img.paste(wm, (px, py), wm)
+
+                pixmap = pil_to_qpixmap(preview_img)
+                self.scene.clear()
+                self.scene.addPixmap(pixmap)
+                self.view.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            except Exception as e:
+                print(f"Render error: {e}")
+
+        def display_image(self, idx):
+            if 0 <= idx < len(self.image_list):
+                self.current_idx = idx
+                path = self.image_list[idx]
+                try:
+                    self.orig_image = Image.open(path).convert("RGBA")
+                    self.render_preview()
+                    self.image_list_widget.setCurrentRow(idx)
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to load: {e}")
+
+        def on_image_selected(self, item):
+            idx = self.image_list_widget.row(item)
+            self.display_image(idx)
+
+        def prev_image(self):
+            if self.image_list:
+                self.display_image((self.current_idx - 1) % len(self.image_list))
+
+        def next_image(self):
+            if self.image_list:
+                self.display_image((self.current_idx + 1) % len(self.image_list))
+
+        def batch_export(self):
+            if not self.image_list or not self.watermark_pil:
+                QMessageBox.warning(self, "Warning", "Load folder and watermark first")
+                return
+            metrics = (self.wm_cx, self.wm_cy, self.wm_scale, self.wm_opacity, self.wm_rotation)
+            self.batch_worker = BatchWorker(self.image_list, self.watermark_pil, metrics, self.batch_opts, self.per_image_overrides)
+            self.batch_worker.finished.connect(lambda s, t: QMessageBox.information(self, "Done", f"Processed: {s}/{t}"))
+            self.batch_worker.start()
+
+        def update_image_list_widget(self):
+            self.image_list_widget.clear()
+            for path in self.image_list:
+                item = QListWidgetItem(os.path.basename(path))
+                self.image_list_widget.addItem(item)
+
+        def show_shortcuts(self):
+            dialog = ShortcutsDialog(self, self.theme)
+            dialog.exec()
+
+        def apply_theme(self):
+            self.setStyleSheet(qss(self.theme))
+
+        def dragEnterEvent(self, e):
+            if e.mimeData().hasUrls():
+                e.acceptProposedAction()
+
+        def dropEvent(self, e):
+            urls = e.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile()
+                if os.path.isdir(path):
+                    self.load_folder_from_path(path)
+                elif os.path.isfile(path):
+                    if path.lower().endswith(('png', 'jpg', 'jpeg', 'gif', 'bmp')):
+                        self.load_watermark_from_path(path)
+
+        def closeEvent(self, e):
+            if self.batch_worker and self.batch_worker.isRunning():
+                self.batch_worker.stop()
+                self.batch_worker.wait()
+            super().closeEvent(e)
 
 if __name__ == "__main__":
-    app = WatermarkApp()
-    
-    if getattr(sys, 'frozen', False):
-        application_path = sys._MEIPASS
+    if USE_PYQT6:
+        app = QApplication(sys.argv)
+        window = WatermarkStudio()
+        window.show()
+        sys.exit(app.exec())
     else:
-        application_path = os.path.dirname(os.path.abspath(__file__))
-        
-    wm_default = os.path.join(application_path, "watermark.png")
-    if os.path.exists(wm_default):
-        app._load_watermark_file(wm_default)
-    app.mainloop()
+        print("Error: PyQt6 is required. Install with: pip install PyQt6")
+        print("Or install Tkinter version: pip install pillow numpy opencv-python")
